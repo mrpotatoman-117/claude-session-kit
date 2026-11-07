@@ -4,6 +4,11 @@ A Claude Code mod that opens a panel beside the chat for choosing which
 plugins, skills and MCP servers load, so a session carries only what the work
 needs and spends fewer tokens on lists Claude never uses.
 
+<p align="center">
+  <img src="assets/panel-header.png" width="440" alt="The Session kit panel: a running token total, the Apply to scope menu, and tabs for Plugins, Skills and MCP servers with sort and cost filters.">
+  <img src="assets/panel-list.png" width="440" alt="Each plugin shows a green, amber or red cost pill, how often past sessions used it, a one-line description and an On or Off switch.">
+</p>
+
 ## What it does
 
 - Lists every installed plugin, personal skill (`~/.claude/skills`) and MCP
