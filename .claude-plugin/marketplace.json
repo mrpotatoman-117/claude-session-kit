@@ -1,0 +1,11 @@
+{
+  "name": "session-kit",
+  "owner": { "name": "sabhalbils" },
+  "plugins": [
+    {
+      "name": "session-kit",
+      "source": "./plugin",
+      "description": "A panel to choose which plugins, skills and MCP servers load: for one session, one project or all projects."
+    }
+  ]
+}

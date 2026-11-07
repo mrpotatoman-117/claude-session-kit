@@ -1,0 +1,8 @@
+{
+  "name": "session-kit",
+  "version": "0.1.0",
+  "description": "A panel to choose which plugins, skills and MCP servers load: for one session, one project or all projects",
+  "author": { "name": "sabhalbils" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
