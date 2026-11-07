@@ -4,7 +4,7 @@
 
 - On branch `feature/project-presets`: check presets and Minimize in a fresh
   desktop session, then merge the branch and mark
-  v0.2.0 as the latest release.
+  v0.2.1 as the latest release.
 - Confirm a This project save of skills shows up as a smaller Skills row in a
   fresh desktop session.
 
@@ -19,7 +19,7 @@
 
 ## Done
 
-- Published on GitHub (public); releases v0.1.0 (main, stable) and v0.2.0
+- Published on GitHub (public); releases v0.1.0 (main, stable) and v0.2.1
   (pre-release from feature/project-presets).
 - Panel with Plugins, Skills and MCP servers tabs, sorting, cost pills, usage.
 - Staged changes with Apply, Apply and start, and Discard.

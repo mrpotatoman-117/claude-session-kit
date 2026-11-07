@@ -54,3 +54,5 @@
   project, after a preset saved in Session_Kit did not show in a Hermes_Agent
   session. "Used in this project" stays per project. The panel reads the file
   on every draw, so a save in another session shows without reopening.
+- Released the shared-presets fix as v0.2.1 (pre-release) rather than move
+  the published v0.2.0 tag, which would rewrite a public tag.
