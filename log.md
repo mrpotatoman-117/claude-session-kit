@@ -46,3 +46,7 @@
   way back, so it was removed. Minimize now closes the pane with a toast
   naming /session-kit, is not kept across sessions (a new session would
   start with no panel), and a held first message reopens the pane.
+- Pushed feature/project-presets (0.2.0) and kept it off main for more
+  testing. Released v0.1.0 from main as the stable release and v0.2.0 from
+  the branch as a pre-release. A test presets file was pushed by mistake in
+  the first branch commit; it is now gitignored but stays in that commit.
