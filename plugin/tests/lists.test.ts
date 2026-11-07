@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { dropEntries, dropNamedSections, dropSections, dropTools, mentionsPlugin, parseMcpList, setDenied, setEntries } from '../hooks/lists'
+import { dropEntries, dropNamedSections, dropSections, dropTools, historyFolder, mentionsPlugin, nextPresetName, parseMcpList, parsePresets, presetChanges, renamePreset, setDenied, setEntries, usedPreset } from '../hooks/lists'
 
 test('hidden skills and a hidden plugin leave the list, the rest stay', async () => {
   const listing = [
@@ -72,4 +72,47 @@ test('the deny list gains and loses servers, keeping other entries', async () =>
   const off = setDenied(settings, ['fal-ai'], true)
   expect(off).toEqual({ model: 'x', deniedMcpServers: [{ serverName: 'keep' }, { serverName: 'fal-ai' }] })
   expect(setDenied(off, ['fal-ai'], false)).toEqual(settings)
+})
+
+test("a project's history folder is its path with every other character as a dash", async () => {
+  expect(historyFolder('/Users/me/My Drive/Claude_Code/Session.Kit@x')).toBe('-Users-me-My-Drive-Claude-Code-Session-Kit-x')
+})
+
+test('the used preset turns on what the project used and off the rest, leaving MCP alone', async () => {
+  const items = [
+    { key: 'plugin:superpowers@x', kind: 'plugin', projectUses: 4 },
+    { key: 'plugin:gsap@x', kind: 'plugin', projectUses: 0 },
+    { key: 'skill:humanizer', kind: 'skill', projectUses: 1 },
+    { key: 'mcp:fal-ai', kind: 'mcp', projectUses: 0 },
+    { key: 'skill:uncounted', kind: 'skill' },
+  ]
+  expect(usedPreset(items)).toEqual({ 'plugin:superpowers@x': true, 'plugin:gsap@x': false, 'skill:humanizer': true })
+  // A project with no history gets no preset rather than everything off.
+  expect(usedPreset([{ key: 'skill:a', kind: 'skill', projectUses: 0 }])).toEqual({})
+})
+
+test('a preset stages only the switches that change and items that still exist', async () => {
+  const current = { 'plugin:a': true, 'plugin:b': false, 'skill:c': true }
+  const preset = { 'plugin:a': true, 'plugin:b': true, 'skill:c': false, 'skill:gone': true }
+  expect(presetChanges(current, preset)).toEqual({ 'plugin:b': true, 'skill:c': false })
+})
+
+test('a new preset takes the first free number', async () => {
+  expect(nextPresetName([])).toBe('Preset 1')
+  expect(nextPresetName(['Preset 1', 'Preset 3', 'Design'])).toBe('Preset 2')
+})
+
+test('a damaged presets file loses only what is damaged', async () => {
+  expect(parsePresets('not json')).toEqual({})
+  expect(parsePresets('[1]')).toEqual({})
+  expect(parsePresets('{"Web":{"plugin:a":true,"skill:b":"on"},"Bad":3}')).toEqual({ Web: { 'plugin:a': true } })
+})
+
+test('a rename keeps the preset and its place, and never overwrites another', async () => {
+  const presets = { Web: { 'plugin:a': true }, Video: { 'plugin:b': false } }
+  const renamed = renamePreset(presets, 'Web', 'Sites')
+  expect(Object.keys(renamed)).toEqual(['Sites', 'Video'])
+  expect(renamed.Sites).toEqual({ 'plugin:a': true })
+  expect(() => renamePreset(presets, 'Web', 'Video')).toThrow()
+  expect(() => renamePreset(presets, 'Gone', 'X')).toThrow()
 })

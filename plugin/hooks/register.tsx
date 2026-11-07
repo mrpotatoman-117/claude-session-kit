@@ -2,7 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface as Engine, Register } from 'claude-code'
 
 import type { Item, Kit, Scope, Sort } from '../types'
-import { dropEntries, dropNamedSections, dropSections, dropTools, mcpPrefix, mentionsPlugin, parseMcpList, setDenied, setEntries } from './lists'
+import { dropEntries, dropNamedSections, dropSections, dropTools, historyFolder, mcpPrefix, mentionsPlugin, nextPresetName, parseMcpList, parsePresets, presetChanges, renamePreset, setDenied, setEntries, usedPreset } from './lists'
+import type { Preset } from './lists'
 
 // One pane per session listing every installed plugin and personal skill,
 // each with an On/Off button. Presses are staged; Apply carries them out at
@@ -32,8 +33,13 @@ const kit = atom(
     pending: {},
     isStarted: false,
     held: '',
+    preset: '',
+    presets: {},
+    naming: null,
+    isConfirmingDelete: false,
+    isMinimized: false,
   } as Kit,
-  { shape: 'kit-4' },
+  { shape: 'kit-6' },
 )
 
 // A short record of start-up, first-message and save decisions, kept beside
@@ -53,6 +59,9 @@ async function trace($: Engine, line: string) {
 
 const keyOf = (item: Item) => `${item.kind}:${item.id}`
 const nameOf = (item: Item) => item.id.split('@')[0] ?? item.id
+
+// The dropdown's value for the preset worked out from this project's history.
+const USED = 'used'
 
 const SCOPES: { value: Scope; label: string }[] = [
   { value: 'session', label: 'This session only' },
@@ -251,10 +260,11 @@ async function load($: Engine) {
     const before = new Map(k.items.map(i => [keyOf(i), i]))
     const merged = items.map(i => {
       const old = before.get(keyOf(i))
-      return { ...i, tokens: i.tokens ?? old?.tokens, uses: i.uses ?? old?.uses }
+      return { ...i, tokens: i.tokens ?? old?.tokens, uses: i.uses ?? old?.uses, projectUses: old?.projectUses }
     })
     return { ...k, root, items: merged, status: k.status === 'Loading...' ? '' : k.status }
   })
+  await loadPresets($, root)
   if (!isScanning) {
     isScanning = true
     void Promise.all([loadCosts($, home), loadUsage($, home), loadServers($, home)]).finally(() => {
@@ -269,29 +279,105 @@ async function load($: Engine) {
 // transcripts (subagents/) are part of their session, not sessions of their own.
 const USAGE_SCRIPT = String.raw`grep -r -o --include='*.jsonl' --exclude-dir=subagents -E '"name":"Skill","input":\{"skill":"[^"]+"|<command-name>/?[^<]+</command-name>|"subagent_type":"[^"]+"' . 2>/dev/null | sed -E 's#^([^:]+):.*("skill":"|<command-name>/?|"subagent_type":")([^"<]+).*#\1\t\3#' | sort -u | cut -f2 | sort | uniq -c`
 
-async function loadUsage($: Engine, home: string) {
-  let counts = new Map<string, number>()
+// Uses per name in the transcripts under one folder; undefined when there
+// is no readable history there.
+async function countUses($: Engine, dir: string) {
+  if (!(await $.fs.exists(dir))) return undefined
+  const counts = new Map<string, number>()
   try {
-    const run = await $.process.run(['sh', '-c', USAGE_SCRIPT], {
-      cwd: `${home}/.claude/projects`,
-      timeoutMs: 60000,
-    })
+    const run = await $.process.run(['sh', '-c', USAGE_SCRIPT], { cwd: dir, timeoutMs: 60000 })
     for (const line of run.stdout.split('\n')) {
       const match = line.trim().match(/^(\d+)\s+(.+)$/)
       if (match?.[1] && match[2]) counts.set(match[2], Number(match[1]))
     }
   } catch {
-    return // no history readable: the pane simply shows no usage
+    return undefined
   }
+  return counts
+}
+
+async function loadUsage($: Engine, home: string) {
+  // Read the folder now: the desktop app may have moved the session from a
+  // spare folder to its project since start-up.
+  const root = await $.session.root()
+  const [all, project] = await Promise.all([
+    countUses($, `${home}/.claude/projects`),
+    root.includes('/.claude/spares/') ? undefined : countUses($, `${home}/.claude/projects/${historyFolder(root)}`),
+  ])
+  if (!all) return // no history readable: the pane simply shows no usage
   // A skill by its name; a plugin by everything it namespaces ("name:...").
-  const usesOf = (item: Item) => {
+  const usesOf = (counts: Map<string, number>, item: Item) => {
     const name = nameOf(item)
     if (item.kind === 'skill') return counts.get(name) ?? 0
     let sum = counts.get(name) ?? 0
     for (const [key, n] of counts) if (key.startsWith(`${name}:`)) sum += n
     return sum
   }
-  await update($, kit, k => ({ ...k, items: k.items.map(i => ({ ...i, uses: usesOf(i) })) }))
+  await update($, kit, k => ({
+    ...k,
+    items: k.items.map(i => ({ ...i, uses: usesOf(all, i), projectUses: project && usesOf(project, i) })),
+  }))
+}
+
+const presetsFile = (root: string) => `${root}/.claude/session-kit-presets.json`
+
+async function loadPresets($: Engine, root: string) {
+  const path = presetsFile(root)
+  const presets = (await $.fs.exists(path)) ? parsePresets(await $.fs.read(path)) : {}
+  await update($, kit, k => ({ ...k, presets }))
+}
+
+// Changes this project's presets file: read fresh, so a save in another
+// session is not lost, then written whole. `chosen` is the preset the menu
+// shows afterwards; `done` is the status line.
+async function editPresets(
+  $: Engine,
+  change: (presets: Record<string, Preset>) => Record<string, Preset>,
+  chosen: string,
+  done: string,
+) {
+  const root = await $.session.root()
+  if (root.includes('/.claude/spares/')) {
+    void $.ui.toast('Not saved: this session has not reached its project folder yet. Try again in a moment.')
+    return
+  }
+  const path = presetsFile(root)
+  try {
+    const before = (await $.fs.exists(path)) ? await $.fs.read(path) : '{}'
+    // A file that is there but unreadable is left alone, not overwritten.
+    try {
+      JSON.parse(before)
+    } catch {
+      throw new Error(`${path} is not valid JSON, so it was left alone.`)
+    }
+    const presets = change(parsePresets(before))
+    await $.fs.write(path, JSON.stringify(presets, null, 2) + '\n')
+    await update($, kit, k => ({ ...k, presets, preset: chosen ? `saved:${chosen}` : '', naming: null, isConfirmingDelete: false, status: done }))
+  } catch (err) {
+    void $.ui.toast(`Preset not changed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+const savePreset = ($: Engine, name: string, preset: Preset) =>
+  editPresets($, presets => ({ ...presets, [name]: preset }), name, `Saved preset "${name}" for this project.`)
+
+const renameSaved = ($: Engine, from: string, to: string) =>
+  editPresets($, presets => renamePreset(presets, from, to), to, `Renamed "${from}" to "${to}".`)
+
+const deleteSaved = ($: Engine, name: string) =>
+  editPresets($, presets => Object.fromEntries(Object.entries(presets).filter(([n]) => n !== name)), '', `Deleted preset "${name}".`)
+
+// Folding the pane is remembered across sessions, like the scope.
+// A docked pane keeps the size the app gives it, so minimizing closes the
+// pane; /session-kit opens it again. Not kept across sessions, since a new
+// session would then start with no panel in sight.
+async function setMinimized($: Engine, isMinimized: boolean) {
+  await update($, kit, k => ({ ...k, isMinimized }))
+  if (isMinimized) {
+    await $.ui.close({ id: PANE })
+    // The command is the only way back, so it is said every time.
+    void $.ui.toast('Session kit minimized. Type /session-kit to bring it back.')
+  } else await open($)
 }
 
 const SORTS: { value: Sort; label: string }[] = [
@@ -472,7 +558,8 @@ async function setItems($: Engine, items: Item[], turnOn: boolean) {
 let isScanning = false
 
 async function open($: Engine) {
-  await $.ui.open({ id: PANE, title: 'Session kit' })
+  // Minimized, the band shows instead; the list still loads for its total.
+  if (!(await read($, kit)).isMinimized) await $.ui.open({ id: PANE, title: 'Session kit' })
   try {
     await load($)
   } catch (err) {
@@ -551,7 +638,8 @@ export const register: Register = on => {
       await start($)
       return next(e)
     }
-    await update($, kit, k => ({ ...k, held: e.text }))
+    // A minimized panel opens again: Apply and start is needed to send it.
+    await update($, kit, k => ({ ...k, held: e.text, isMinimized: false }))
     void open($)
     return {
       drop: 'Session kit: choose what loads in the panel, then press Apply and start. Your message is kept and sends then. Closing the panel sends it as it is.',
@@ -607,14 +695,17 @@ export const register: Register = on => {
   // Closing the pane must not strand a held first message: it sends as it is.
   on('ui.close', async ($, e, next) => {
     const r = await next(e)
-    if (e.id === PANE && !(await read($, kit)).isStarted) await start($)
+    // Minimizing closes it too, and keeps the first message held.
+    const k = await read($, kit)
+    if (e.id === PANE && !k.isStarted && !k.isMinimized) await start($)
     return r
   })
 
   on('command.run', { command: 'session-kit' }, async $ => {
-    await open($)
+    await setMinimized($, false)
     return { text: 'Session kit opened.' }
   })
+
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
@@ -623,7 +714,9 @@ export const register: Register = on => {
     const Select = 'Select' in elements ? elements.Select : undefined
     const pickSort = (value: string) => void update($, kit, k => ({ ...k, sort: value as Sort }))
     const k = await read($, kit)
-    const { root, items, status, sort, scope, tab, hidden, pending, isStarted, held } = k
+    const { root, items, status, sort, scope, tab, hidden, pending, isStarted, held, preset, presets, naming, isConfirmingDelete } = k
+    // A text field where the surface draws one (not yet the mobile app).
+    const Input = 'Input' in elements ? elements.Input : undefined
     const project = root.split('/').pop() || root
     const isLoading = items.length === 0 && status === 'Loading...'
     // What Claude gets now: loaded by the settings and not hidden this session.
@@ -782,9 +875,76 @@ export const register: Register = on => {
       return `${of.filter(willBeOn).length}/${of.length}`
     }
 
+    // Presets never switch this panel itself, nor connectors the app runs.
+    const presetable = items.filter(i => nameOf(i) !== $.plugin.name && !byApp(i))
+    const used = usedPreset(presetable.map(i => ({ key: keyOf(i), kind: i.kind, projectUses: i.projectUses })))
+    const presetOptions = [
+      { value: '', label: 'No preset' },
+      ...(Object.keys(used).length ? [{ value: USED, label: 'Used in this project' }] : []),
+      ...Object.keys(presets).map(name => ({ value: `saved:${name}`, label: name })),
+    ]
+    const presetLabel = presetOptions.find(o => o.value === preset)?.label ?? ''
+    // A preset stages its presses in place of any already staged, as a whole set.
+    const pickPreset = (value: string) => {
+      const chosen = value === USED ? used : presets[value.replace(/^saved:/, '')]
+      if (!chosen) {
+        void update($, kit, k => ({ ...k, preset: '', naming: null, isConfirmingDelete: false }))
+        return
+      }
+      const current = Object.fromEntries(presetable.map(i => [keyOf(i), isOn(i)]))
+      // This session only cannot load what the settings keep off.
+      const notLoadable = new Set(items.filter(i => scope === 'session' && !i.on).map(keyOf))
+      const changes = Object.fromEntries(
+        Object.entries(presetChanges(current, chosen)).filter(([key, wanted]) => !(wanted && notLoadable.has(key))),
+      )
+      const n = Object.keys(changes).length
+      void update($, kit, k => ({
+        ...k,
+        preset: value,
+        pending: changes,
+        naming: null,
+        isConfirmingDelete: false,
+        status: n ? `Preset staged: ${n} change${n === 1 ? '' : 's'}. Press Apply to carry them out.` : 'Already matches this preset.',
+      }))
+    }
+    // What a save records: every switch as it will be once applied.
+    const snapshot = () => Object.fromEntries(presetable.map(i => [keyOf(i), willBeOn(i)]))
+    const startSaving = () => {
+      const name = nextPresetName(Object.keys(presets))
+      if (Input) void update($, kit, k => ({ ...k, naming: { mode: 'save' as const, text: name }, isConfirmingDelete: false }))
+      else void savePreset($, name, snapshot())
+    }
+    // The saved preset the menu shows, which Update, Rename and Delete act on.
+    const savedName = preset.startsWith('saved:') && preset.slice(6) in presets ? preset.slice(6) : ''
+    const submitName = (text: string) => {
+      const name = text.trim()
+      if (!name) return void $.ui.toast('Type a name for the preset first.')
+      if (naming?.mode === 'rename') void renameSaved($, savedName, name)
+      else void savePreset($, name, snapshot())
+    }
+    const presetNote =
+      naming?.mode === 'save'
+        ? 'Saves every switch as it will be once applied. A name already used is replaced.'
+        : naming?.mode === 'rename'
+          ? `Renames "${savedName}". A name another preset has is refused.`
+          : isConfirmingDelete
+            ? `Delete "${savedName}" from this project? This cannot be undone. Your switches stay as they are.`
+            : savedName
+              ? 'To edit it, change the switches, then press Update to save them into this preset.'
+              : 'Choosing a preset stages its switches; Apply carries them out at the scope below.'
+
+    const applyStart = !isStarted ? (
+      <Button key="apply-start" label="Apply and start" variant="primary" autoFocus onPress={() => void apply($, true)} />
+    ) : null
+
     return (
       <Box flexDirection="column" paddingX="sm">
-        <Text wrap="wrap">Choose what Claude loads when a session starts in {project}.</Text>
+        <Box flexDirection="row" alignItems="flex-start" gap="md">
+          <Box flexGrow={1} flexShrink={1}>
+            <Text wrap="wrap">Choose what Claude loads when a session starts in {project}.</Text>
+          </Box>
+          <Button key="minimize" label="Minimize" variant="secondary" onPress={() => void setMinimized($, true)} />
+        </Box>
 
         {isLoading ? (
           <Box marginTop="lg">
@@ -804,6 +964,50 @@ export const register: Register = on => {
             </Box>
 
             <Box flexDirection="column" marginTop="lg" rowGap="sm">
+              {picker('preset', 'Preset', presetOptions, preset, pickPreset)}
+              {naming && Input ? (
+                <Box flexDirection="row" flexWrap="wrap" alignItems="center" gap="sm">
+                  <Input
+                    key={`preset-name:${naming.mode}`}
+                    label={naming.mode === 'rename' ? 'New name' : 'Name'}
+                    value={naming.text}
+                    submitLabel={naming.mode === 'rename' ? 'rename' : 'save'}
+                    autoFocus
+                    onInput={v => void update($, kit, k => ({ ...k, naming: k.naming && { ...k.naming, text: v } }))}
+                    onSubmit={submitName}
+                  />
+                  <Button key="preset-cancel" label="Cancel" variant="secondary" onPress={() => void update($, kit, k => ({ ...k, naming: null }))} />
+                </Box>
+              ) : isConfirmingDelete && savedName ? (
+                <Box flexDirection="row" flexWrap="wrap" gap="sm">
+                  <Button key="preset-delete-confirm" label={`Delete "${savedName}"`} variant="primary" onPress={() => void deleteSaved($, savedName)} />
+                  <Button key="preset-delete-keep" label="Keep it" variant="secondary" onPress={() => void update($, kit, k => ({ ...k, isConfirmingDelete: false }))} />
+                </Box>
+              ) : (
+                <Box flexDirection="row" flexWrap="wrap" gap="sm">
+                  <Button key="preset-save" label="Save as preset" variant="secondary" onPress={startSaving} />
+                  {savedName ? [
+                      <Button key="preset-update" label="Update" variant="secondary" onPress={() => void savePreset($, savedName, snapshot())} />,
+                      <Button
+                        key="preset-rename"
+                        label="Rename"
+                        variant="secondary"
+                        onPress={() =>
+                          Input
+                            ? void update($, kit, k => ({ ...k, naming: { mode: 'rename' as const, text: savedName } }))
+                            : void $.ui.toast('Renaming needs a text field, which this app does not draw yet. Use the desktop app.')
+                        }
+                      />,
+                      <Button key="preset-delete" label="Delete" variant="secondary" onPress={() => void update($, kit, k => ({ ...k, isConfirmingDelete: true }))} />,
+                    ] : null}
+                </Box>
+              )}
+              <Text size="footnote" dimColor={!isConfirmingDelete} weight={isConfirmingDelete ? 'semibold' : 'regular'} wrap="wrap">
+                {presetNote}
+              </Text>
+            </Box>
+
+            <Box flexDirection="column" marginTop="lg" rowGap="sm">
               {picker('scope', 'Apply to', scopes, scope, pickScope)}
               <Text size="footnote" dimColor wrap="wrap">{scopeNote}</Text>
             </Box>
@@ -811,15 +1015,7 @@ export const register: Register = on => {
             {!isStarted || changes ? (
               <Box flexDirection="column" marginTop="lg" rowGap="xs">
                 <Box flexDirection="row" flexWrap="wrap" gap="sm">
-                  {!isStarted ? (
-                    <Button
-                      key="apply-start"
-                      label="Apply and start"
-                      variant="primary"
-                      autoFocus
-                      onPress={() => void apply($, true)}
-                    />
-                  ) : null}
+                  {applyStart}
                   {changes ? (
                     <Button
                       key="apply"
@@ -833,7 +1029,7 @@ export const register: Register = on => {
                       key="discard"
                       label="Discard"
                       variant="secondary"
-                      onPress={() => void update($, kit, k => ({ ...k, pending: {} }))}
+                      onPress={() => void update($, kit, k => ({ ...k, pending: {}, preset: '' }))}
                     />
                   ) : null}
                 </Box>

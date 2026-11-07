@@ -84,3 +84,63 @@ export function dropNamedSections(text: string, names: string[]) {
     .filter(block => !names.some(n => block.split('\n')[0] === `## ${n}`))
     .join('\n')
 }
+
+// Presets ------------------------------------------------------------------
+
+// A preset maps `${kind}:${id}` to whether the item should be on, the same
+// shape as the panel's staged presses.
+export type Preset = Record<string, boolean>
+
+// The folder under ~/.claude/projects holding a project's past sessions:
+// Claude Code names it after the path, every other character turned to "-".
+export function historyFolder(root: string) {
+  return root.replace(/[^a-zA-Z0-9]/g, '-')
+}
+
+// "Used in this project": plugins and skills the project's past sessions used
+// go on, the rest off. MCP servers are left out, since tool calls to them are
+// not counted, and a preset that turned them all off would break the project.
+export function usedPreset(items: { key: string; kind: string; projectUses?: number }[]): Preset {
+  const counted = items.filter(i => i.kind !== 'mcp' && i.projectUses !== undefined)
+  if (!counted.some(i => i.projectUses! > 0)) return {}
+  return Object.fromEntries(counted.map(i => [i.key, i.projectUses! > 0]))
+}
+
+// The presses that move the current switches to a preset: only items that
+// exist now and would change. Items the preset does not name stay as they are.
+export function presetChanges(current: Record<string, boolean>, preset: Preset): Preset {
+  return Object.fromEntries(Object.entries(preset).filter(([key, on]) => key in current && current[key] !== on))
+}
+
+// The first free "Preset N", for a save the person does not rename.
+export function nextPresetName(names: string[]) {
+  let n = 1
+  while (names.includes(`Preset ${n}`)) n++
+  return `Preset ${n}`
+}
+
+// The presets file, read leniently: anything that is not a name mapped to
+// on/off switches is dropped rather than failing the panel.
+export function parsePresets(text: string): Record<string, Preset> {
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    return {}
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return {}
+  const out: Record<string, Preset> = {}
+  for (const [name, preset] of Object.entries(data as Record<string, unknown>)) {
+    if (!preset || typeof preset !== 'object' || Array.isArray(preset)) continue
+    out[name] = Object.fromEntries(Object.entries(preset).filter(([, on]) => typeof on === 'boolean')) as Preset
+  }
+  return out
+}
+
+// Renames a preset, keeping its place in the list. A name another preset
+// already has is refused rather than overwriting that preset.
+export function renamePreset(presets: Record<string, Preset>, from: string, to: string) {
+  if (!(from in presets)) throw new Error(`There is no preset named "${from}".`)
+  if (to !== from && to in presets) throw new Error(`A preset named "${to}" already exists.`)
+  return Object.fromEntries(Object.entries(presets).map(([name, p]) => [name === from ? to : name, p]))
+}

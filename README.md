@@ -24,6 +24,15 @@ needs and spends fewer tokens on lists Claude never uses.
     which outranks the account settings. Applies from the next session.
   - All projects: written to `~/.claude/settings.json`. Applies from the next
     session.
+- Presets per project, from the Preset menu: "Used in this project" switches
+  on the plugins and skills this project's past sessions used and the rest
+  off; Save as preset stores the current switches under a name, in the
+  project's `.claude/session-kit-presets.json`. Choosing one stages its
+  switches; Apply carries them out. A chosen saved preset can be updated with
+  the current switches, renamed, or deleted (after a confirm).
+- Minimize closes the panel out of the way; `/session-kit` brings it back. A
+  first message sent while minimized opens it again, since Apply and start
+  is needed to send it.
 - A new session's first message is refused and kept until Apply and start,
   because the session's lists go out with that first request. Apply and start
   then sends the message as the user's own. Closing the panel sends it as it is.

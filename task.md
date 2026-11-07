@@ -2,6 +2,8 @@
 
 ## Now
 
+- On branch `feature/project-presets`: check presets and Minimize in a fresh
+  desktop session, then merge or drop the branch.
 - Confirm a This project save of skills shows up as a smaller Skills row in a
   fresh desktop session.
 

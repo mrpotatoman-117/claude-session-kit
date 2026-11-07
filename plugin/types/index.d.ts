@@ -14,6 +14,8 @@ export type Item = {
   about: string
   // past sessions that used it (a skill, command or agent of it), when counted
   uses?: number
+  // past sessions of this project alone that used it, when counted
+  projectUses?: number
 }
 
 export type Sort = 'name' | 'cost' | 'used' | 'unused' | 'on' | 'off'
@@ -38,6 +40,16 @@ export type Kit = {
   isStarted: boolean
   // the first message, refused and kept until Apply and start sends it
   held: string
+  // the preset last chosen in the dropdown, '' for none
+  preset: string
+  // this project's saved presets, by name
+  presets: Record<string, Record<string, boolean>>
+  // the name field while a preset is being saved or renamed, else null
+  naming: { mode: 'save' | 'rename'; text: string } | null
+  // Delete was pressed once and waits for Confirm
+  isConfirmingDelete: boolean
+  // the pane closed by Minimize; /session-kit opens it again
+  isMinimized: boolean
 }
 
 declare module 'claude-code' {
