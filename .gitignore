@@ -5,3 +5,5 @@ __pycache__/
 # Written by Claude Code when it loads the mod, and by the mod while it runs.
 plugin/.claude-plugin/types/
 plugin/trace.log
+# Presets saved while testing the panel in this project: personal, not part of the mod.
+.claude/session-kit-presets.json
