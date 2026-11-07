@@ -34,12 +34,11 @@ const kit = atom(
     isStarted: false,
     held: '',
     preset: '',
-    presets: {},
     naming: null,
     isConfirmingDelete: false,
     isMinimized: false,
   } as Kit,
-  { shape: 'kit-6' },
+  { shape: 'kit-7' },
 )
 
 // A short record of start-up, first-message and save decisions, kept beside
@@ -264,7 +263,6 @@ async function load($: Engine) {
     })
     return { ...k, root, items: merged, status: k.status === 'Loading...' ? '' : k.status }
   })
-  await loadPresets($, root)
   if (!isScanning) {
     isScanning = true
     void Promise.all([loadCosts($, home), loadUsage($, home), loadServers($, home)]).finally(() => {
@@ -319,15 +317,17 @@ async function loadUsage($: Engine, home: string) {
   }))
 }
 
-const presetsFile = (root: string) => `${root}/.claude/session-kit-presets.json`
+// Saved presets are shared by every project, beside the account settings.
+const presetsFile = async ($: Engine) => `${(await $.env.get('HOME')) ?? ''}/.claude/session-kit-presets.json`
 
-async function loadPresets($: Engine, root: string) {
-  const path = presetsFile(root)
-  const presets = (await $.fs.exists(path)) ? parsePresets(await $.fs.read(path)) : {}
-  await update($, kit, k => ({ ...k, presets }))
+// Read on every draw rather than kept in state, so a preset saved in another
+// session shows here without reopening the panel.
+async function readPresets($: Engine) {
+  const path = await presetsFile($)
+  return (await $.fs.exists(path)) ? parsePresets(await $.fs.read(path)) : {}
 }
 
-// Changes this project's presets file: read fresh, so a save in another
+// Changes the presets file: read fresh, so a save in another
 // session is not lost, then written whole. `chosen` is the preset the menu
 // shows afterwards; `done` is the status line.
 async function editPresets(
@@ -336,12 +336,7 @@ async function editPresets(
   chosen: string,
   done: string,
 ) {
-  const root = await $.session.root()
-  if (root.includes('/.claude/spares/')) {
-    void $.ui.toast('Not saved: this session has not reached its project folder yet. Try again in a moment.')
-    return
-  }
-  const path = presetsFile(root)
+  const path = await presetsFile($)
   try {
     const before = (await $.fs.exists(path)) ? await $.fs.read(path) : '{}'
     // A file that is there but unreadable is left alone, not overwritten.
@@ -352,14 +347,14 @@ async function editPresets(
     }
     const presets = change(parsePresets(before))
     await $.fs.write(path, JSON.stringify(presets, null, 2) + '\n')
-    await update($, kit, k => ({ ...k, presets, preset: chosen ? `saved:${chosen}` : '', naming: null, isConfirmingDelete: false, status: done }))
+    await update($, kit, k => ({ ...k, preset: chosen ? `saved:${chosen}` : '', naming: null, isConfirmingDelete: false, status: done }))
   } catch (err) {
     void $.ui.toast(`Preset not changed: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
 
 const savePreset = ($: Engine, name: string, preset: Preset) =>
-  editPresets($, presets => ({ ...presets, [name]: preset }), name, `Saved preset "${name}" for this project.`)
+  editPresets($, presets => ({ ...presets, [name]: preset }), name, `Saved preset "${name}" for every project.`)
 
 const renameSaved = ($: Engine, from: string, to: string) =>
   editPresets($, presets => renamePreset(presets, from, to), to, `Renamed "${from}" to "${to}".`)
@@ -714,7 +709,8 @@ export const register: Register = on => {
     const Select = 'Select' in elements ? elements.Select : undefined
     const pickSort = (value: string) => void update($, kit, k => ({ ...k, sort: value as Sort }))
     const k = await read($, kit)
-    const { root, items, status, sort, scope, tab, hidden, pending, isStarted, held, preset, presets, naming, isConfirmingDelete } = k
+    const { root, items, status, sort, scope, tab, hidden, pending, isStarted, held, preset, naming, isConfirmingDelete } = k
+    const presets = await readPresets($)
     // A text field where the surface draws one (not yet the mobile app).
     const Input = 'Input' in elements ? elements.Input : undefined
     const project = root.split('/').pop() || root

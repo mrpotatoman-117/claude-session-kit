@@ -42,8 +42,6 @@ export type Kit = {
   held: string
   // the preset last chosen in the dropdown, '' for none
   preset: string
-  // this project's saved presets, by name
-  presets: Record<string, Record<string, boolean>>
   // the name field while a preset is being saved or renamed, else null
   naming: { mode: 'save' | 'rename'; text: string } | null
   // Delete was pressed once and waits for Confirm

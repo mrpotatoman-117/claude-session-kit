@@ -50,3 +50,7 @@
   testing. Released v0.1.0 from main as the stable release and v0.2.0 from
   the branch as a pre-release. A test presets file was pushed by mistake in
   the first branch commit; it is now gitignored but stays in that commit.
+- Saved presets moved to ~/.claude/session-kit-presets.json, shared by every
+  project, after a preset saved in Session_Kit did not show in a Hermes_Agent
+  session. "Used in this project" stays per project. The panel reads the file
+  on every draw, so a save in another session shows without reopening.
