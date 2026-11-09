@@ -144,3 +144,56 @@ export function renamePreset(presets: Record<string, Preset>, from: string, to: 
   if (to !== from && to in presets) throw new Error(`A preset named "${to}" already exists.`)
   return Object.fromEntries(Object.entries(presets).map(([name, p]) => [name === from ? to : name, p]))
 }
+
+// Search ---------------------------------------------------------------------
+
+// Whether an item's texts hold every word of the search, in any order and
+// case; an empty search matches everything.
+export function matchesSearch(query: string, texts: string[]) {
+  const haystack = texts.join(' ').toLowerCase()
+  return query.toLowerCase().split(/\s+/).filter(Boolean).every(word => haystack.includes(word))
+}
+
+// Skill families ---------------------------------------------------------------
+
+// Which family each skill belongs to, from a skills lock file written by
+// `npx skills add` ({ skills: { name: { source: "owner/repo" } } }): the
+// repo's name, so "Leonxlnx/taste-skill" is the taste-skill family.
+export function parseSkillLock(text: string): Record<string, string> {
+  let skills: unknown
+  try {
+    skills = JSON.parse(text)?.skills
+  } catch {
+    return {}
+  }
+  if (!skills || typeof skills !== 'object') return {}
+  const out: Record<string, string> = {}
+  for (const [name, entry] of Object.entries(skills as Record<string, { source?: unknown }>)) {
+    const repo = typeof entry?.source === 'string' ? entry.source.split('/').pop() : ''
+    if (repo) out[name] = repo
+  }
+  return out
+}
+
+// Lays a sorted list out as rows: a family takes the place of its first
+// member and holds all of its members in order; a family of one is a plain row.
+export function groupFamilies<T>(list: T[], familyOf: (item: T) => string | undefined) {
+  const size = new Map<string, number>()
+  for (const item of list) {
+    const f = familyOf(item)
+    if (f) size.set(f, (size.get(f) ?? 0) + 1)
+  }
+  const rows: ({ family: string; members: T[] } | { item: T })[] = []
+  const placed = new Map<string, T[]>()
+  for (const item of list) {
+    const f = familyOf(item)
+    if (!f || size.get(f)! < 2) rows.push({ item })
+    else if (placed.has(f)) placed.get(f)!.push(item)
+    else {
+      const members = [item]
+      placed.set(f, members)
+      rows.push({ family: f, members })
+    }
+  }
+  return rows
+}

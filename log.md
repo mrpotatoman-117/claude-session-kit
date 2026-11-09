@@ -56,3 +56,18 @@
   on every draw, so a save in another session shows without reopening.
 - Released the shared-presets fix as v0.2.1 (pre-release) rather than move
   the published v0.2.0 tag, which would rewrite a public tag.
+- Added a search field that filters every tab by name and description; tab
+  buttons show match counts while searching, and All on/All off act on the
+  matches only, so one search can switch a related set at once.
+- The desktop app draws Input at a fixed width with no width prop, so the
+  search field stays compact with its own placeholder; a hand-built
+  full-width field was declined as it would lose cursor, selection and paste.
+- Project skills (.claude/skills) and project MCP servers (.mcp.json) now
+  show in the panel: macOS skills and REA installed in Focus-Groov were
+  missing. `claude mcp list` runs in the project folder and its result is
+  kept per folder, since one shared list let the last project decide what
+  every panel showed. REA in Focus-Groov still waits on approval there.
+- Grouped skills into families by the repo their lock file names, with one
+  switch per family and Show to pick single skills. Installing families was
+  left out: the panel switches what is installed and downloads nothing.
+  Plugins stay one switch each, since a plugin is saved on or off whole.

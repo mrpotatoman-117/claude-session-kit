@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface as Engine, Register } from 'claude-code'
 
 import type { Item, Kit, Scope, Sort } from '../types'
-import { dropEntries, dropNamedSections, dropSections, dropTools, historyFolder, mcpPrefix, mentionsPlugin, nextPresetName, parseMcpList, parsePresets, presetChanges, renamePreset, setDenied, setEntries, usedPreset } from './lists'
+import { dropEntries, dropNamedSections, dropSections, dropTools, groupFamilies, historyFolder, matchesSearch, mcpPrefix, mentionsPlugin, nextPresetName, parseMcpList, parsePresets, parseSkillLock, presetChanges, renamePreset, setDenied, setEntries, usedPreset } from './lists'
 import type { Preset } from './lists'
 
 // One pane per session listing every installed plugin and personal skill,
@@ -37,8 +37,10 @@ const kit = atom(
     naming: null,
     isConfirmingDelete: false,
     isMinimized: false,
+    query: '',
+    open: [],
   } as Kit,
-  { shape: 'kit-7' },
+  { shape: 'kit-9' },
 )
 
 // A short record of start-up, first-message and save decisions, kept beside
@@ -210,20 +212,29 @@ async function load($: Engine) {
     }
   }
 
-  // Personal skills in ~/.claude/skills: on unless skillOverrides says off.
-  const skillDirs = (await $.fs.exists(`${home}/.claude/skills`)) ? await $.fs.list(`${home}/.claude/skills`) : []
-  for (const dir of skillDirs) {
-    const file = `${home}/.claude/skills/${dir.name}/SKILL.md`
-    if (dir.kind === 'file' || !(await $.fs.exists(file))) continue
-    const text = await $.fs.read(file)
-    items.push({
-      kind: 'skill',
-      id: dir.name,
-      on: skills[dir.name] !== 'off',
-      isOverridden: dir.name in (local.skillOverrides ?? {}),
-      tokens: skillTokens(text),
-      about: oneLine(frontDescription(text)),
-    })
+  // Skills: personal ones in ~/.claude/skills, then this project's own in
+  // .claude/skills. Both are on unless skillOverrides says off; a project
+  // skill with a personal skill's name is listed once. Each lock file says
+  // which repo (family) its skills came from.
+  const lockOf = async (path: string) => ((await $.fs.exists(path)) ? parseSkillLock(await $.fs.read(path)) : {})
+  const families = { personal: await lockOf(`${home}/.agents/.skill-lock.json`), project: await lockOf(`${root}/skills-lock.json`) }
+  for (const [folder, isProject] of [[`${home}/.claude/skills`, false], [`${root}/.claude/skills`, true]] as const) {
+    if (!(await $.fs.exists(folder))) continue
+    for (const dir of await $.fs.list(folder)) {
+      const file = `${folder}/${dir.name}/SKILL.md`
+      if (dir.kind === 'file' || items.some(i => i.kind === 'skill' && i.id === dir.name) || !(await $.fs.exists(file))) continue
+      const text = await $.fs.read(file)
+      items.push({
+        kind: 'skill',
+        id: dir.name,
+        on: skills[dir.name] !== 'off',
+        isOverridden: dir.name in (local.skillOverrides ?? {}),
+        isProject,
+        family: (isProject ? families.project : families.personal)[dir.name],
+        tokens: skillTokens(text),
+        about: oneLine(frontDescription(text)),
+      })
+    }
   }
 
   // MCP servers, from the last `claude mcp list` (refreshed in the background
@@ -236,7 +247,7 @@ async function load($: Engine) {
   // measured whenever its tools are there and remembered for the next look.
   const tools = await $.tool.list()
   const seen = ((await $.store.get('mcp-costs')) as Record<string, { tokens: number; count: number }> | undefined) ?? {}
-  for (const server of ((await $.store.get('mcp-servers')) as string[] | undefined) ?? []) {
+  for (const server of ((await $.store.get(serversKey(root))) as string[] | undefined) ?? []) {
     const own = tools.filter(t => t.name.startsWith(mcpPrefix(server)))
     // shortcut: counts only the tool names Claude is listed, not each tool's
     // schema, which loads on use.
@@ -406,14 +417,20 @@ function usage(n: number | undefined) {
   return `used in ${n} session${n === 1 ? '' : 's'}`
 }
 
+const serversKey = (root: string) => `mcp-servers:${root}`
+
 // The MCP server list comes from `claude mcp list`, which health-checks every
 // server and takes a few seconds, so it runs after the pane is drawn and the
 // names are kept for the next open. It reloads the list when done.
 async function loadServers($: Engine, home: string) {
+  // Run in the project folder, so servers from its own .mcp.json are listed,
+  // and kept per folder, so one project's servers never show in another.
+  const root = await $.session.root()
+  if (root.includes('/.claude/spares/')) return
   try {
-    const run = await $.process.run([await claudeBin($, home), 'mcp', 'list'], { timeoutMs: 60000 })
+    const run = await $.process.run([await claudeBin($, home), 'mcp', 'list'], { cwd: root, timeoutMs: 60000 })
     const servers = parseMcpList(run.stdout)
-    await $.store.set('mcp-servers', servers)
+    await $.store.set(serversKey(root), servers)
     // The check takes seconds; by its end the servers have connected, so a
     // reload now measures their costs, and picks up any new server name.
     await load($)
@@ -709,7 +726,7 @@ export const register: Register = on => {
     const Select = 'Select' in elements ? elements.Select : undefined
     const pickSort = (value: string) => void update($, kit, k => ({ ...k, sort: value as Sort }))
     const k = await read($, kit)
-    const { root, items, status, sort, scope, tab, hidden, pending, isStarted, held, preset, naming, isConfirmingDelete } = k
+    const { root, items, status, sort, scope, tab, hidden, pending, isStarted, held, preset, naming, isConfirmingDelete, query, open: openFamilies } = k
     const presets = await readPresets($)
     // A text field where the surface draws one (not yet the mobile app).
     const Input = 'Input' in elements ? elements.Input : undefined
@@ -821,7 +838,7 @@ export const register: Register = on => {
       const isStuck = scope === 'session' && !item.on
       const facts = [
         item.kind === 'skill'
-          ? 'your skills'
+          ? item.isProject ? "this project's skills" : 'your skills'
           : item.kind === 'mcp'
             ? item.id.startsWith('claude.ai ') ? 'claude.ai connector' : 'MCP server'
             : SOURCES[source] ?? source,
@@ -862,11 +879,72 @@ export const register: Register = on => {
       )
     }
 
-    const list = items.filter(i => i.kind === tab).sort(compare(sort, willBeOn))
+    // A family of skills (one repo's) as one row with one switch: On when all
+    // its skills will be on, Off when none, Some between; pressing Some turns
+    // all on. Show opens it to its skills, each with its own switch.
+    const familyRow = (family: string, members: Item[]) => {
+      const onCount = members.filter(willBeOn).length
+      const allOn = onCount === members.length
+      const isOpen = openFamilies.includes(family) || query.trim() !== ''
+      const isStaged = members.some(i => keyOf(i) in pending)
+      const facts = [
+        members[0]?.isProject ? "this project's skills" : 'your skills',
+        `${members.length} skills, ${onCount} on`,
+        isStaged ? 'not applied yet' : '',
+      ].filter(Boolean)
+      const toggleOpen = () =>
+        void update($, kit, k => ({
+          ...k,
+          open: k.open.includes(family) ? k.open.filter(f => f !== family) : [...k.open, family],
+        }))
+      return (
+        <Box flexDirection="column" rowGap="lg">
+          <Box flexDirection="row" alignItems="flex-start" gap="md">
+            <Box flexDirection="column" flexGrow={1} flexShrink={1} rowGap="xs">
+              <Box flexDirection="row" alignItems="center" gap="sm" flexWrap="wrap">
+                <Text weight="semibold" dimColor={onCount === 0}>{family}</Text>
+                {badge(members.reduce((sum, i) => sum + (i.tokens ?? 0), 0))}
+              </Box>
+              <Text size="footnote" dimColor={!isStaged} weight={isStaged ? 'semibold' : 'regular'} wrap="wrap">
+                {facts.join(' · ')}
+              </Text>
+            </Box>
+            <Box flexDirection="row" gap="sm" flexShrink={0}>
+              {query.trim() ? null : (
+                <Button key={`family-open:${family}`} label={isOpen ? 'Hide' : 'Show'} variant="secondary" onPress={toggleOpen} />
+              )}
+              <Button
+                key={`family:${family}`}
+                label={allOn ? 'On' : onCount === 0 ? 'Off' : 'Some'}
+                variant={allOn ? 'primary' : 'secondary'}
+                onPress={() => stage(members, !allOn)}
+              />
+            </Box>
+          </Box>
+          {isOpen ? (
+            <Box flexDirection="column" rowGap="lg" paddingLeft="lg">
+              {members.map(row)}
+            </Box>
+          ) : null}
+        </Box>
+      )
+    }
+
+    // The search filters every tab by name and description.
+    const found = items.filter(i => matchesSearch(query, [i.id, i.about]))
+    const list = found.filter(i => i.kind === tab).sort(compare(sort, willBeOn))
+    // Skills from one repo are grouped; sorted by name, a family goes by its own.
+    const layout = groupFamilies(list, i => (i.kind === 'skill' ? i.family : undefined))
+    if (sort === 'name') {
+      const label = (r: (typeof layout)[number]) => ('family' in r ? r.family : nameOf(r.item))
+      layout.sort((a, b) => label(a).localeCompare(label(b)))
+    }
     // All off must not switch off this panel itself, nor reach connectors the
     // desktop app runs.
     const bulk = list.filter(i => nameOf(i) !== $.plugin.name && !byApp(i))
+    // While searching a tab shows its matches, so the right tab is easy to find.
     const countOf = (kind: Item['kind']) => {
+      if (query.trim()) return `${found.filter(i => i.kind === kind).length} found`
       const of = items.filter(i => i.kind === kind)
       return `${of.filter(willBeOn).length}/${of.length}`
     }
@@ -1044,7 +1122,25 @@ export const register: Register = on => {
               </Box>
             ) : null}
 
-            <Box flexDirection="row" flexWrap="wrap" gap="sm" marginTop="xl">
+            {Input ? (
+              // The app draws its text field at a fixed width, so the field
+              // carries its own placeholder rather than a separate label.
+              <Box flexDirection="row" alignItems="center" gap="sm" marginTop="xl">
+                <Input
+                  key="search"
+                  placeholder="Search by name or what it does"
+                  value={query}
+                  submitLabel="search"
+                  onInput={v => void update($, kit, k => ({ ...k, query: v }))}
+                  onSubmit={v => void update($, kit, k => ({ ...k, query: v }))}
+                />
+                {query ? (
+                  <Button key="search-clear" label="Clear" variant="secondary" onPress={() => void update($, kit, k => ({ ...k, query: '' }))} />
+                ) : null}
+              </Box>
+            ) : null}
+
+            <Box flexDirection="row" flexWrap="wrap" gap="sm" marginTop={Input ? 'md' : 'xl'}>
               <Button
                 key="tab:plugin"
                 label={`Plugins ${countOf('plugin')}`}
@@ -1069,8 +1165,8 @@ export const register: Register = on => {
               {picker('sort', 'Sort by', SORTS, sort, v => pickSort(v))}
               {bulk.length ? (
                 <Box flexDirection="row" gap="sm">
-                  <Button key={`${tab}:all-on`} label="All on" variant="secondary" onPress={() => stage(bulk, true)} />
-                  <Button key={`${tab}:all-off`} label="All off" variant="secondary" onPress={() => stage(bulk, false)} />
+                  <Button key={`${tab}:all-on`} label={query.trim() ? `All ${bulk.length} on` : 'All on'} variant="secondary" onPress={() => stage(bulk, true)} />
+                  <Button key={`${tab}:all-off`} label={query.trim() ? `All ${bulk.length} off` : 'All off'} variant="secondary" onPress={() => stage(bulk, false)} />
                 </Box>
               ) : null}
             </Box>
@@ -1085,14 +1181,14 @@ export const register: Register = on => {
             <Box flexDirection="column" rowGap="lg" marginTop="lg">
               {list.length === 0 ? (
                 <Text size="footnote" dimColor wrap="wrap">
-                  {{
+                  {query.trim() ? `Nothing here matches "${query.trim()}".` : {
                     plugin: 'No plugins installed.',
-                    skill: 'No personal skills in ~/.claude/skills.',
+                    skill: "No skills in ~/.claude/skills or this project's .claude/skills.",
                     mcp: 'Finding your MCP servers... the first look takes a few seconds.',
                   }[tab]}
                 </Text>
               ) : (
-                list.map(row)
+                layout.map(r => ('family' in r ? familyRow(r.family, r.members) : row(r.item)))
               )}
             </Box>
           </>

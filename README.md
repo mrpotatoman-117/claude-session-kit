@@ -11,11 +11,18 @@ needs and spends fewer tokens on lists Claude never uses.
 
 ## What it does
 
-- Lists every installed plugin, personal skill (`~/.claude/skills`) and MCP
-  server, each with a one-line description, how often past sessions used it,
+- Lists every installed plugin, skill (personal ones in `~/.claude/skills`
+  and the project's own in `.claude/skills`) and MCP server (including the
+  project's `.mcp.json`), each with a one-line description, how often past sessions used it,
   and its always-on token cost as a green, amber or red pill.
 - Tabs for Plugins, Skills and MCP servers; sort by name, cost, use, or on/off;
   All on and All off per tab.
+- Skills installed together from one repo (taste-skill, hyperframes, bama)
+  are grouped as a family, read from `~/.agents/.skill-lock.json` and the
+  project's `skills-lock.json`: one switch turns the family on or off, and
+  Show opens it to switch single skills.
+- Search by name or description across all three tabs; each tab shows its
+  matches, and All on or All off then switch only what was found.
 - Presses are staged. Apply carries them out at the scope chosen under Apply to:
   - This session only: the items are cut from the lists Claude reads at the
     start (skills, agents, tool names, MCP notes, start-of-session hook text),

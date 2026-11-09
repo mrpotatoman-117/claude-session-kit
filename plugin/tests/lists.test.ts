@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { dropEntries, dropNamedSections, dropSections, dropTools, historyFolder, mentionsPlugin, nextPresetName, parseMcpList, parsePresets, presetChanges, renamePreset, setDenied, setEntries, usedPreset } from '../hooks/lists'
+import { dropEntries, dropNamedSections, dropSections, dropTools, groupFamilies, historyFolder, matchesSearch, mentionsPlugin, nextPresetName, parseMcpList, parsePresets, parseSkillLock, presetChanges, renamePreset, setDenied, setEntries, usedPreset } from '../hooks/lists'
 
 test('hidden skills and a hidden plugin leave the list, the rest stay', async () => {
   const listing = [
@@ -115,4 +115,24 @@ test('a rename keeps the preset and its place, and never overwrites another', as
   expect(renamed.Sites).toEqual({ 'plugin:a': true })
   expect(() => renamePreset(presets, 'Web', 'Video')).toThrow()
   expect(() => renamePreset(presets, 'Gone', 'X')).toThrow()
+})
+
+test('search matches every word, in any order and case, across name and description', async () => {
+  const texts = ['claude-seo', 'Comprehensive SEO analysis for any website']
+  expect(matchesSearch('', texts)).toBe(true)
+  expect(matchesSearch('SEO', texts)).toBe(true)
+  expect(matchesSearch('website seo', texts)).toBe(true)
+  expect(matchesSearch('seo video', texts)).toBe(false)
+})
+
+test('a skills lock gives each skill its repo as family, and a damaged one gives none', async () => {
+  const lock = JSON.stringify({ skills: { brandkit: { source: 'Leonxlnx/taste-skill' }, watch: { source: 'bradautomates/claude-video' }, odd: {} } })
+  expect(parseSkillLock(lock)).toEqual({ brandkit: 'taste-skill', watch: 'claude-video' })
+  expect(parseSkillLock('not json')).toEqual({})
+})
+
+test('a family takes the place of its first member; a family of one stays a plain row', async () => {
+  const family: Record<string, string> = { a: 'taste', c: 'taste', d: 'solo' }
+  const rows = groupFamilies(['a', 'b', 'c', 'd'], name => family[name])
+  expect(rows).toEqual([{ family: 'taste', members: ['a', 'c'] }, { item: 'b' }, { item: 'd' }])
 })

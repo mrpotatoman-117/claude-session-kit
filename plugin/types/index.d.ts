@@ -12,6 +12,10 @@ export type Item = {
   version?: string
   // what it is for, one line from its manifest or SKILL.md
   about: string
+  // a skill from the project's own .claude/skills, not ~/.claude/skills
+  isProject?: boolean
+  // the repo a skill was installed from, by its lock file, when known
+  family?: string
   // past sessions that used it (a skill, command or agent of it), when counted
   uses?: number
   // past sessions of this project alone that used it, when counted
@@ -48,6 +52,10 @@ export type Kit = {
   isConfirmingDelete: boolean
   // the pane closed by Minimize; /session-kit opens it again
   isMinimized: boolean
+  // the search field's text, filtering every tab
+  query: string
+  // skill families shown expanded
+  open: string[]
 }
 
 declare module 'claude-code' {
